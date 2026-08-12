@@ -3,3 +3,4 @@ dist/
 .nasauthunder-checkpoint.json
 config.json
 *.cpuprofile
+*.tgz

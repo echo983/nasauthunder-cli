@@ -11,7 +11,7 @@ Archive a local directory to Usenet with your own NNTP account. Files use the sa
 ## Install and configure
 
 ```bash
-npm install -g github:echo983/nasauthunder-cli
+npm install -g https://github.com/echo983/nasauthunder-cli/releases/download/v0.1.0/nasauthunder-cli-0.1.0.tgz
 nasauthunder config init
 chmod 600 ~/.config/nasauthunder/config.json
 nasauthunder config check
