@@ -3,12 +3,16 @@
   "version": "0.1.0",
   "description": "Archive local directories to Usenet using the nasauthunder immutable object protocol",
   "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/echo983/nasauthunder-cli.git" },
+  "homepage": "https://github.com/echo983/nasauthunder-cli#readme",
+  "bugs": "https://github.com/echo983/nasauthunder-cli/issues",
   "type": "module",
   "bin": { "nasauthunder": "dist/src/cli.js" },
   "files": ["dist/src", "README.md", "LICENSE", "config.example.json"],
   "engines": { "node": ">=22" },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "test": "npm run build && node --test dist/test/**/*.test.js",
     "check": "tsc -p tsconfig.json --noEmit"
   },

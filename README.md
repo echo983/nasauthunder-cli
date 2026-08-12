@@ -11,11 +11,13 @@ Archive a local directory to Usenet with your own NNTP account. Files use the sa
 ## Install and configure
 
 ```bash
-npm install -g nasauthunder-cli
+npm install -g github:echo983/nasauthunder-cli
 nasauthunder config init
 chmod 600 ~/.config/nasauthunder/config.json
 nasauthunder config check
 ```
+
+After the npm registry release, `npm install -g nasauthunder-cli` is equivalent.
 
 The password may instead be supplied as `NASAUTHUNDER_NNTP_PASSWORD`. Other fields use the same `NASAUTHUNDER_NNTP_*` prefix.
 

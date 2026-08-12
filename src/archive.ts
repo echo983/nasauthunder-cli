@@ -38,10 +38,10 @@ export async function uploadDirectory(rootInput: string, pool: ArchivePool, opti
   const root = path.resolve(rootInput);
   const rootStat = await stat(root);
   if (!rootStat.isDirectory()) throw new TypeError("upload target must be a directory");
-  const localFiles = await scanDirectory(root);
+  const checkpointPath = path.resolve(options.checkpoint ?? path.join(root, ".nasauthunder-checkpoint.json"));
+  const localFiles = await scanDirectory(root, checkpointPath);
   if (localFiles.length === 0) throw new TypeError("directory contains no regular files");
   options.onProgress?.({ type: "scan", files: localFiles.length });
-  const checkpointPath = path.resolve(options.checkpoint ?? path.join(root, ".nasauthunder-checkpoint.json"));
   const checkpoint = await loadCheckpoint(checkpointPath, root);
   const results: ReceiptFile[] = [];
 
@@ -158,14 +158,14 @@ async function archiveBytes(bytes: Uint8Array, gcid: string, pool: ArchivePool, 
   if (!await pool.run((client) => client.read(messageId(gcid, 0)))) throw new Error("receipt base marker readback failed");
 }
 
-async function scanDirectory(root: string): Promise<LocalFile[]> {
+async function scanDirectory(root: string, checkpointPath: string): Promise<LocalFile[]> {
   const output: LocalFile[] = [];
   async function walk(current: string, components: string[]): Promise<void> {
     const entries = await readdir(current, { withFileTypes: true });
     entries.sort((a, b) => Buffer.from(a.name).compare(Buffer.from(b.name)));
     for (const entry of entries) {
-      if (entry.name === ".nasauthunder-checkpoint.json") continue;
       const absolute = path.join(current, entry.name);
+      if (absolute === checkpointPath || absolute.startsWith(`${checkpointPath}.`) && absolute.endsWith(".tmp")) continue;
       const next = [...components, entry.name];
       if (entry.isSymbolicLink()) throw new TypeError(`symbolic links are not accepted: ${next.join("/")}`);
       if (entry.isDirectory()) await walk(absolute, next);
@@ -194,7 +194,9 @@ async function readPart(location: string, size: number, index: number): Promise<
 async function parallel<T>(values: readonly T[], concurrency: number, operation: (value: T) => Promise<void>): Promise<void> {
   let cursor = 0;
   async function worker(): Promise<void> { for (;;) { const index = cursor++; if (index >= values.length) return; await operation(values[index]); } }
-  await Promise.all(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  const settled = await Promise.allSettled(Array.from({ length: Math.min(concurrency, values.length) }, worker));
+  const failed = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
+  if (failed) throw failed.reason;
 }
 
 async function withRetries<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
