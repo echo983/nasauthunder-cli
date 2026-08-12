@@ -1,0 +1,11 @@
+{
+  "host": "news.example.net",
+  "port": 563,
+  "tls": true,
+  "username": "your-username",
+  "password": "your-password",
+  "group": "alt.binaries.test",
+  "from": "nasauthunder@example.invalid",
+  "connections": 4,
+  "timeoutMs": 30000
+}

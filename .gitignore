@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.nasauthunder-checkpoint.json
+config.json
+*.cpuprofile
