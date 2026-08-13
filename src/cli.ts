@@ -4,7 +4,7 @@ import { defaultConfigPath, initializeConfig, loadConfig } from "./config.js";
 import { NntpPool } from "./nntp.js";
 import { calculateBytesGcid, messageId } from "./protocol.js";
 
-const VERSION = "0.1.0";
+const VERSION = "0.2.0";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;
@@ -36,7 +36,8 @@ async function main(argv: string[]): Promise<void> {
       process.once("SIGINT", () => controller.abort(new Error("interrupted")));
       process.once("SIGTERM", () => controller.abort(new Error("terminated")));
       const result = await uploadDirectory(directory, pool, {
-        checkpoint: option(args, "--checkpoint"), signal: controller.signal, onProgress: printProgress,
+        checkpoint: option(args, "--checkpoint"), jump: integerOption(args, "--jump", 0),
+        signal: controller.signal, onProgress: printProgress,
       });
       console.log(`\nReceipt GCID: ${result.receiptGcid}`);
       console.log(`Open: ${result.receiptUrl}`);
@@ -64,7 +65,23 @@ function option(args: string[], name: string): string | undefined {
   return value;
 }
 
-function positional(args: readonly string[]): string | undefined { return args.find((value) => !value.startsWith("--")); }
+function positional(args: readonly string[]): string | undefined {
+  const valuedOptions = new Set(["--config", "--checkpoint", "--jump"]);
+  for (let index = 0; index < args.length; index++) {
+    const value = args[index];
+    if (valuedOptions.has(value)) { index++; continue; }
+    if (!value.startsWith("--")) return value;
+  }
+  return undefined;
+}
+
+function integerOption(args: string[], name: string, fallback: number): number {
+  const value = option(args, name);
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 0) throw new TypeError(`${name} must be a non-negative safe integer`);
+  return parsed;
+}
 
 function printProgress(event: ProgressEvent): void {
   if (event.type === "scan") console.log(`Found ${event.files} files`);
@@ -78,7 +95,7 @@ function help(): void {
   console.log(`nasauthunder ${VERSION}
 
 Usage:
-  nasauthunder upload <directory> [--config <file>] [--checkpoint <file>]
+  nasauthunder upload <directory> [--jump <generation>] [--config <file>] [--checkpoint <file>]
   nasauthunder verify <receipt-gcid> [--config <file>]
   nasauthunder config init [--config <file>]
   nasauthunder config check [--config <file>]

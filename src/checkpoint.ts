@@ -6,6 +6,7 @@ const writes = new Map<string, Promise<void>>();
 export interface FileCheckpoint {
   size: number;
   mtimeMs: number;
+  jump: number;
   gcid: string;
   complete: number[];
   committed: boolean;

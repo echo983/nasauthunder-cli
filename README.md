@@ -11,13 +11,11 @@ Archive a local directory to Usenet with your own NNTP account. Files use the sa
 ## Install and configure
 
 ```bash
-npm install -g https://github.com/echo983/nasauthunder-cli/releases/download/v0.1.0/nasauthunder-cli-0.1.0.tgz
+npm install -g nasauthunder-cli
 nasauthunder config init
 chmod 600 ~/.config/nasauthunder/config.json
 nasauthunder config check
 ```
-
-After the npm registry release, `npm install -g nasauthunder-cli` is equivalent.
 
 The password may instead be supplied as `NASAUTHUNDER_NNTP_PASSWORD`. Other fields use the same `NASAUTHUNDER_NNTP_*` prefix.
 
@@ -25,10 +23,13 @@ The password may instead be supplied as `NASAUTHUNDER_NNTP_PASSWORD`. Other fiel
 
 ```bash
 nasauthunder upload ./my-directory
+nasauthunder upload ./my-directory --jump 1
 nasauthunder verify <RECEIPT_GCID>
 ```
 
 The CLI recursively scans regular files, rejects symbolic links, calculates Thunder GCIDs as streams, uploads continuation articles over persistent concurrent NNTP sessions, and publishes article zero last. A local `.nasauthunder-checkpoint.json` makes interruption recoverable. Re-running against an already committed object validates article zero and skips its upload.
+
+`--jump N` appends a virtual 24-byte generation trailer before hashing and upload. Use it to move every file and the receipt to fresh GCID/Message-ID addresses after immutable address pollution. The public data service hides the trailer, so downloads and HTTP ranges remain the original bytes. Generation zero is the unchanged legacy representation; choose generations explicitly rather than using jump for network failures.
 
 On success:
 

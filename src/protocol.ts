@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { open } from "node:fs/promises";
 
 export const ARTICLE_PAYLOAD_SIZE = 716_800;
+export const JUMP_TRAILER_SIZE = 24;
+export const JUMP_MAGIC = Uint8Array.of(
+  0x24, 0x3f, 0x6a, 0x88, 0x85, 0xa3, 0x08, 0xd3,
+  0x13, 0x19, 0x8a, 0x2e, 0x03, 0x70, 0x73, 0x44,
+);
 const MIN_GCID_CHUNK = 0x40000;
 const MAX_GCID_CHUNK = 0x200000;
 const MAX_GCID_CHUNKS = 0x200;
@@ -44,19 +49,47 @@ export function gcidChunkSize(size: number): number {
   return chunk;
 }
 
-export async function calculateFileGcid(path: string, size: number): Promise<string> {
-  const chunkSize = gcidChunkSize(size);
+export function jumpTrailer(generation: number): Uint8Array {
+  if (!Number.isSafeInteger(generation) || generation < 1) throw new RangeError("jump generation must be a positive safe integer");
+  const trailer = new Uint8Array(JUMP_TRAILER_SIZE);
+  trailer.set(JUMP_MAGIC);
+  new DataView(trailer.buffer).setBigUint64(16, BigInt(generation), false);
+  return trailer;
+}
+
+export function parseJumpTrailer(tail: Uint8Array): bigint | null {
+  if (tail.byteLength < JUMP_TRAILER_SIZE) return null;
+  const start = tail.byteLength - JUMP_TRAILER_SIZE;
+  for (let index = 0; index < JUMP_MAGIC.byteLength; index++) if (tail[start + index] !== JUMP_MAGIC[index]) return null;
+  const generation = new DataView(tail.buffer, tail.byteOffset + start + 16, 8).getBigUint64(0, false);
+  return generation === 0n ? null : generation;
+}
+
+export function physicalSize(logicalSize: number, generation: number): number {
+  if (!Number.isSafeInteger(logicalSize) || logicalSize < 0) throw new RangeError("size must be a non-negative safe integer");
+  if (!Number.isSafeInteger(generation) || generation < 0) throw new RangeError("jump generation must be a non-negative safe integer");
+  return logicalSize + (generation === 0 ? 0 : JUMP_TRAILER_SIZE);
+}
+
+export async function calculateFileGcid(path: string, size: number, generation = 0): Promise<string> {
+  const storageSize = physicalSize(size, generation);
+  const chunkSize = gcidChunkSize(storageSize);
   const outer = createHash("sha1");
   const handle = await open(path, "r");
+  const trailer = generation === 0 ? new Uint8Array() : jumpTrailer(generation);
   try {
-    const buffer = Buffer.allocUnsafe(chunkSize);
+    const buffer = Buffer.alloc(chunkSize);
     let position = 0;
-    while (position < size) {
-      const wanted = Math.min(chunkSize, size - position);
-      const { bytesRead } = await handle.read(buffer, 0, wanted, position);
-      if (bytesRead !== wanted) throw new Error(`file changed or ended while hashing: ${path}`);
-      outer.update(createHash("sha1").update(buffer.subarray(0, bytesRead)).digest());
-      position += bytesRead;
+    while (position < storageSize) {
+      const wanted = Math.min(chunkSize, storageSize - position);
+      const fileLength = Math.max(0, Math.min(wanted, size - position));
+      if (fileLength > 0) {
+        const { bytesRead } = await handle.read(buffer, 0, fileLength, position);
+        if (bytesRead !== fileLength) throw new Error(`file changed or ended while hashing: ${path}`);
+      }
+      if (fileLength < wanted) buffer.set(trailer.subarray(position + fileLength - size, position + wanted - size), fileLength);
+      outer.update(createHash("sha1").update(buffer.subarray(0, wanted)).digest());
+      position += wanted;
     }
     return outer.digest("hex").toUpperCase();
   } finally {
@@ -64,11 +97,18 @@ export async function calculateFileGcid(path: string, size: number): Promise<str
   }
 }
 
-export function calculateBytesGcid(bytes: Uint8Array): string {
-  const chunk = gcidChunkSize(bytes.byteLength);
+export function calculateBytesGcid(bytes: Uint8Array, generation = 0): string {
+  const trailer = generation === 0 ? new Uint8Array() : jumpTrailer(generation);
+  const size = physicalSize(bytes.byteLength, generation);
+  const chunk = gcidChunkSize(size);
   const outer = createHash("sha1");
-  for (let offset = 0; offset < bytes.byteLength; offset += chunk) {
-    outer.update(createHash("sha1").update(bytes.subarray(offset, offset + chunk)).digest());
+  for (let offset = 0; offset < size; offset += chunk) {
+    const end = Math.min(size, offset + chunk);
+    const piece = new Uint8Array(end - offset);
+    const fromFile = Math.max(0, Math.min(end, bytes.byteLength) - offset);
+    if (fromFile > 0) piece.set(bytes.subarray(offset, offset + fromFile));
+    if (offset + fromFile < end) piece.set(trailer.subarray(offset + fromFile - bytes.byteLength, end - bytes.byteLength), fromFile);
+    outer.update(createHash("sha1").update(piece).digest());
   }
   return outer.digest("hex").toUpperCase();
 }

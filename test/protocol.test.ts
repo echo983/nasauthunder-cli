@@ -5,7 +5,7 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import {
   ARTICLE_PAYLOAD_SIZE, articleCount, calculateBytesGcid, calculateFileGcid,
-  createReceipt, decodeArticle, encodeArticle, gcidChunkSize, messageId,
+  createReceipt, decodeArticle, encodeArticle, gcidChunkSize, jumpTrailer, messageId, parseJumpTrailer, physicalSize,
 } from "../src/protocol.js";
 
 describe("nasauthunder protocol compatibility", () => {
@@ -41,5 +41,18 @@ describe("nasauthunder protocol compatibility", () => {
     assert.equal(first.gcid, second.gcid);
     assert.deepEqual(first.receipt.files.map((file) => file.path), [["A", "x.bin"], ["é.bin"]]);
     assert.equal(articleCount(first.bytes.byteLength), 1);
+  });
+
+  it("appends one fixed jump trailer to file and byte GCID input", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "nasauthunder-jump-"));
+    const location = path.join(root, "boundary.bin");
+    const bytes = Buffer.alloc(ARTICLE_PAYLOAD_SIZE - 10, 19);
+    await writeFile(location, bytes);
+    const combined = Buffer.concat([bytes, jumpTrailer(9)]);
+    assert.equal(await calculateFileGcid(location, bytes.byteLength, 9), calculateBytesGcid(combined));
+    assert.equal(calculateBytesGcid(bytes, 9), calculateBytesGcid(combined));
+    assert.notEqual(calculateBytesGcid(bytes, 8), calculateBytesGcid(bytes, 9));
+    assert.equal(physicalSize(bytes.byteLength, 9), bytes.byteLength + 24);
+    assert.equal(parseJumpTrailer(combined), 9n);
   });
 });

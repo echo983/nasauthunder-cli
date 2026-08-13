@@ -57,6 +57,28 @@ describe("local directory archive", () => {
     assert.equal(memory.posts.length, new Set(memory.posts).size);
     for (const posted of postsBeforeResume) assert.equal(memory.posts.filter((id) => id === posted).length, 1);
   });
+
+  it("publishes jump files and receipts while preserving logical receipt sizes", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "nasauthunder-cli-jump-"));
+    const original = Buffer.alloc(716_800 - 10, 23);
+    await writeFile(path.join(root, "boundary.bin"), original);
+    await writeFile(path.join(root, "empty.bin"), new Uint8Array());
+    const memory = new MemoryPool();
+    const result = await uploadDirectory(root, memory, { jump: 5 });
+    assert.equal(result.files[0].size, original.byteLength);
+    assert.notEqual(result.files[0].gcid, calculateBytesGcid(original));
+    const fileArticles = memory.object(result.files[0].gcid);
+    assert.equal(fileArticles.byteLength, original.byteLength + 24);
+    assert.deepEqual(fileArticles.subarray(0, original.byteLength), original);
+    assert.equal(result.files[1].size, 0);
+    assert.notEqual(result.files[1].gcid, calculateBytesGcid(new Uint8Array()));
+    assert.equal(memory.object(result.files[1].gcid).byteLength, 24);
+    assert.equal(await verifyReceipt(result.receiptGcid, memory).then((value) => value.available), 2);
+    const checkpoint = JSON.parse(await readFile(path.join(root, ".nasauthunder-checkpoint.json"), "utf8")) as {
+      files: Record<string, { jump: number }>;
+    };
+    assert.equal(checkpoint.files["boundary.bin"].jump, 5);
+  });
 });
 
 class MemoryPool implements ArchivePool {
@@ -81,4 +103,16 @@ class MemoryPool implements ArchivePool {
   }
 
   get(gcid: string, index: number) { return this.articles.get(messageId(gcid, index)); }
+
+  object(gcid: string): Uint8Array {
+    const base = this.get(gcid, 0);
+    assert.ok(base);
+    const parts: Uint8Array[] = [];
+    for (let index = 0; index < base.identity.articleCount; index++) {
+      const article = this.get(gcid, index);
+      assert.ok(article);
+      parts.push(article.payload);
+    }
+    return Buffer.concat(parts);
+  }
 }

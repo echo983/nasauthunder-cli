@@ -4,11 +4,14 @@ import { loadCheckpoint, saveCheckpoint, type Checkpoint, type FileCheckpoint } 
 import type { DecodedArticle, NntpClient, NntpPool } from "./nntp.js";
 import {
   ARTICLE_PAYLOAD_SIZE, articleCount, calculateBytesGcid, calculateFileGcid, createReceipt, messageId, normalizeGcid,
-  type ReceiptFile,
+  jumpTrailer, physicalSize, type ReceiptFile,
 } from "./protocol.js";
+
+const EMPTY_GCID = "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709";
 
 export interface UploadOptions {
   checkpoint?: string;
+  jump?: number;
   onProgress?: (event: ProgressEvent) => void;
   signal?: AbortSignal;
 }
@@ -36,6 +39,8 @@ export interface ArchivePool {
 
 export async function uploadDirectory(rootInput: string, pool: ArchivePool, options: UploadOptions = {}): Promise<UploadResult> {
   const root = path.resolve(rootInput);
+  const jump = options.jump ?? 0;
+  if (!Number.isSafeInteger(jump) || jump < 0) throw new RangeError("jump generation must be a non-negative safe integer");
   const rootStat = await stat(root);
   if (!rootStat.isDirectory()) throw new TypeError("upload target must be a directory");
   const checkpointPath = path.resolve(options.checkpoint ?? path.join(root, ".nasauthunder-checkpoint.json"));
@@ -50,8 +55,11 @@ export async function uploadDirectory(rootInput: string, pool: ArchivePool, opti
     const file = localFiles[index];
     options.onProgress?.({ type: "hash", path: file.relative, index: index + 1, total: localFiles.length });
     let saved = checkpoint.files[file.relative];
-    if (!saved || saved.size !== file.size || saved.mtimeMs !== file.mtimeMs) {
-      saved = { size: file.size, mtimeMs: file.mtimeMs, gcid: await calculateFileGcid(file.absolute, file.size), complete: [], committed: file.size === 0 };
+    if (!saved || saved.size !== file.size || saved.mtimeMs !== file.mtimeMs || saved.jump !== jump) {
+      saved = {
+        size: file.size, mtimeMs: file.mtimeMs, jump,
+        gcid: await calculateFileGcid(file.absolute, file.size, jump), complete: [], committed: false,
+      };
       checkpoint.files[file.relative] = saved;
       checkpoint.receiptGcid = undefined;
       await saveCheckpoint(checkpointPath, checkpoint);
@@ -62,12 +70,13 @@ export async function uploadDirectory(rootInput: string, pool: ArchivePool, opti
   }
 
   const created = createReceipt(results);
-  await archiveBytes(created.bytes, created.gcid, pool, options.signal);
-  checkpoint.receiptGcid = created.gcid;
+  const receiptGcid = calculateBytesGcid(created.bytes, jump);
+  await archiveBytes(created.bytes, receiptGcid, jump, pool, options.signal);
+  checkpoint.receiptGcid = receiptGcid;
   await saveCheckpoint(checkpointPath, checkpoint);
-  const receiptUrl = `https://${created.gcid}.ch13a.com`;
-  options.onProgress?.({ type: "receipt", gcid: created.gcid, url: receiptUrl });
-  return { receiptGcid: created.gcid, receiptUrl, files: results };
+  const receiptUrl = `https://${receiptGcid}.ch13a.com`;
+  options.onProgress?.({ type: "receipt", gcid: receiptGcid, url: receiptUrl });
+  return { receiptGcid, receiptUrl, files: results };
 }
 
 async function archiveFile(
@@ -78,12 +87,13 @@ async function archiveFile(
   pool: ArchivePool,
   options: UploadOptions,
 ): Promise<boolean> {
-  if (file.size === 0) return true;
-  const count = articleCount(file.size);
+  const storageSize = physicalSize(file.size, saved.jump);
+  if (storageSize === 0) return true;
+  const count = articleCount(storageSize);
   const base = await pool.run((client) => client.read(messageId(saved.gcid, 0)));
   if (base) {
     if (base.identity.gcid !== normalizeGcid(saved.gcid) || base.identity.index !== 0
-      || base.identity.fileSize !== file.size || base.identity.articleCount !== count) throw new Error(`occupied base marker conflicts: ${file.relative}`);
+      || base.identity.fileSize !== storageSize || base.identity.articleCount !== count) throw new Error(`occupied base marker conflicts: ${file.relative}`);
     saved.committed = true;
     saved.complete = Array.from({ length: count }, (_, index) => index);
     await saveCheckpoint(checkpointPath, checkpoint);
@@ -94,20 +104,20 @@ async function archiveFile(
   const pending = Array.from({ length: Math.max(0, count - 1) }, (_, offset) => offset + 1).filter((index) => !completed.has(index));
   await parallel(pending, pool.config.connections, async (index) => {
     abort(options.signal);
-    const payload = await readPart(file.absolute, file.size, index);
-    const result = await withRetries(() => pool.run((client) => client.post({ gcid: saved.gcid, index, fileSize: file.size, articleCount: count }, payload)), options.signal);
+    const payload = await readPart(file.absolute, file.size, saved.jump, index);
+    const result = await withRetries(() => pool.run((client) => client.post({ gcid: saved.gcid, index, fileSize: storageSize, articleCount: count }, payload)), options.signal);
     completed.add(index);
     saved.complete = [...completed].sort((a, b) => a - b);
     await saveCheckpoint(checkpointPath, checkpoint);
     options.onProgress?.({ type: "article", path: file.relative, completed: completed.size, total: count, reused: result === "exists" });
   });
   abort(options.signal);
-  const basePayload = await readPart(file.absolute, file.size, 0);
+  const basePayload = await readPart(file.absolute, file.size, saved.jump, 0);
   const current = await stat(file.absolute);
   if (current.size !== file.size || current.mtimeMs !== file.mtimeMs) throw new Error(`file changed before commit marker: ${file.relative}`);
-  await withRetries(() => pool.run((client) => client.post({ gcid: saved.gcid, index: 0, fileSize: file.size, articleCount: count }, basePayload)), options.signal);
+  await withRetries(() => pool.run((client) => client.post({ gcid: saved.gcid, index: 0, fileSize: storageSize, articleCount: count }, basePayload)), options.signal);
   const verified = await pool.run((client) => client.read(messageId(saved.gcid, 0)));
-  if (!verified || verified.identity.fileSize !== file.size || verified.identity.articleCount !== count) throw new Error(`base marker readback failed: ${file.relative}`);
+  if (!verified || verified.identity.fileSize !== storageSize || verified.identity.articleCount !== count) throw new Error(`base marker readback failed: ${file.relative}`);
   saved.committed = true;
   saved.complete = Array.from({ length: count }, (_, index) => index);
   await saveCheckpoint(checkpointPath, checkpoint);
@@ -128,33 +138,35 @@ export async function verifyReceipt(receiptGcidInput: string, pool: ArchivePool,
   }
   const bytes = Buffer.concat(parts.map((part) => Buffer.from(part)));
   if (bytes.byteLength !== base.identity.fileSize || calculateBytesGcid(bytes) !== receiptGcid) throw new Error("receipt object GCID does not match its bytes");
-  const receipt = parseReceipt(bytes);
+  const receipt = parseReceipt(stripJumpTrailer(bytes));
   const missing: string[] = [];
   await parallel(receipt.files, pool.config.connections, async (file) => {
     abort(signal);
-    if (file.size === 0) return;
+    if (file.size === 0 && file.gcid === EMPTY_GCID) return;
     const marker = await pool.run((client) => client.read(messageId(file.gcid, 0)));
-    if (!marker || marker.identity.gcid !== file.gcid || marker.identity.fileSize !== file.size
-      || marker.identity.articleCount !== articleCount(file.size)) missing.push(file.path.join("/"));
+    if (!marker || marker.identity.gcid !== file.gcid || !await matchesLogicalSize(marker, file.size, pool)) {
+      missing.push(file.path.join("/"));
+    }
   });
   missing.sort((a, b) => Buffer.from(a).compare(Buffer.from(b)));
   return { receiptGcid, files: receipt.files.length, available: receipt.files.length - missing.length, missing };
 }
 
-async function archiveBytes(bytes: Uint8Array, gcid: string, pool: ArchivePool, signal?: AbortSignal): Promise<void> {
-  const count = articleCount(bytes.byteLength);
+async function archiveBytes(bytes: Uint8Array, gcid: string, jump: number, pool: ArchivePool, signal?: AbortSignal): Promise<void> {
+  const storageSize = physicalSize(bytes.byteLength, jump);
+  const count = articleCount(storageSize);
   if (count === 0) return;
   const base = await pool.run((client) => client.read(messageId(gcid, 0)));
   if (base) {
-    if (base.identity.gcid !== gcid || base.identity.fileSize !== bytes.byteLength || base.identity.articleCount !== count) throw new Error("receipt base marker conflicts");
+    if (base.identity.gcid !== gcid || base.identity.fileSize !== storageSize || base.identity.articleCount !== count) throw new Error("receipt base marker conflicts");
     return;
   }
   await parallel(Array.from({ length: Math.max(0, count - 1) }, (_, offset) => offset + 1), pool.config.connections, async (index) => {
     abort(signal);
-    const start = index * ARTICLE_PAYLOAD_SIZE;
-    await withRetries(() => pool.run((client) => client.post({ gcid, index, fileSize: bytes.byteLength, articleCount: count }, bytes.subarray(start, Math.min(bytes.byteLength, start + ARTICLE_PAYLOAD_SIZE)))), signal);
+    const payload = virtualBytesPart(bytes, jump, index);
+    await withRetries(() => pool.run((client) => client.post({ gcid, index, fileSize: storageSize, articleCount: count }, payload)), signal);
   });
-  await withRetries(() => pool.run((client) => client.post({ gcid, index: 0, fileSize: bytes.byteLength, articleCount: count }, bytes.subarray(0, Math.min(bytes.byteLength, ARTICLE_PAYLOAD_SIZE)))), signal);
+  await withRetries(() => pool.run((client) => client.post({ gcid, index: 0, fileSize: storageSize, articleCount: count }, virtualBytesPart(bytes, jump, 0))), signal);
   if (!await pool.run((client) => client.read(messageId(gcid, 0)))) throw new Error("receipt base marker readback failed");
 }
 
@@ -179,16 +191,73 @@ async function scanDirectory(root: string, checkpointPath: string): Promise<Loca
   return output;
 }
 
-async function readPart(location: string, size: number, index: number): Promise<Uint8Array> {
+async function readPart(location: string, size: number, jump: number, index: number): Promise<Uint8Array> {
   const start = index * ARTICLE_PAYLOAD_SIZE;
-  const length = Math.min(ARTICLE_PAYLOAD_SIZE, size - start);
-  const buffer = Buffer.allocUnsafe(length);
+  const storageSize = physicalSize(size, jump);
+  const length = Math.min(ARTICLE_PAYLOAD_SIZE, storageSize - start);
+  const buffer = Buffer.alloc(length);
   const handle = await open(location, "r");
   try {
-    const { bytesRead } = await handle.read(buffer, 0, length, start);
-    if (bytesRead !== length) throw new Error(`file changed during upload: ${location}`);
+    const fileLength = Math.max(0, Math.min(length, size - start));
+    if (fileLength > 0) {
+      const { bytesRead } = await handle.read(buffer, 0, fileLength, start);
+      if (bytesRead !== fileLength) throw new Error(`file changed during upload: ${location}`);
+    }
+    if (fileLength < length) {
+      const trailer = jumpTrailer(jump);
+      buffer.set(trailer.subarray(start + fileLength - size, start + length - size), fileLength);
+    }
     return buffer;
   } finally { await handle.close(); }
+}
+
+function virtualBytesPart(bytes: Uint8Array, jump: number, index: number): Uint8Array {
+  const start = index * ARTICLE_PAYLOAD_SIZE;
+  const end = Math.min(physicalSize(bytes.byteLength, jump), start + ARTICLE_PAYLOAD_SIZE);
+  const output = new Uint8Array(end - start);
+  const fileLength = Math.max(0, Math.min(end, bytes.byteLength) - start);
+  if (fileLength > 0) output.set(bytes.subarray(start, start + fileLength));
+  if (start + fileLength < end) output.set(jumpTrailer(jump).subarray(start + fileLength - bytes.byteLength, end - bytes.byteLength), fileLength);
+  return output;
+}
+
+async function matchesLogicalSize(
+  marker: DecodedArticle,
+  logicalSize: number,
+  pool: ArchivePool,
+): Promise<boolean> {
+  if (marker.identity.fileSize === logicalSize) return marker.identity.articleCount === articleCount(logicalSize);
+  if (marker.identity.fileSize !== logicalSize + 24
+    || marker.identity.articleCount !== articleCount(marker.identity.fileSize)) return false;
+  const lastIndex = marker.identity.articleCount - 1;
+  const last = lastIndex === 0
+    ? marker
+    : await pool.run((client) => client.read(messageId(marker.identity.gcid, lastIndex)));
+  if (last === null) return false;
+  let tail = last.payload.slice(-24);
+  if (tail.byteLength < 24 && lastIndex > 0) {
+    const previousIndex = lastIndex - 1;
+    const previous = previousIndex === 0
+      ? marker
+      : await pool.run((client) => client.read(messageId(marker.identity.gcid, previousIndex)));
+    if (previous === null) return false;
+    const left = previous.payload.slice(-(24 - tail.byteLength));
+    const joined = new Uint8Array(left.byteLength + tail.byteLength);
+    joined.set(left); joined.set(tail, left.byteLength); tail = joined;
+  }
+  return parseJumpFromPayload(tail);
+}
+
+function parseJumpFromPayload(payload: Uint8Array): boolean {
+  if (payload.byteLength < 24) return false;
+  const expected = jumpTrailer(1).subarray(0, 16);
+  const start = payload.byteLength - 24;
+  for (let index = 0; index < expected.byteLength; index++) if (payload[start + index] !== expected[index]) return false;
+  return new DataView(payload.buffer, payload.byteOffset + payload.byteLength - 8, 8).getBigUint64(0, false) !== 0n;
+}
+
+function stripJumpTrailer(bytes: Uint8Array): Uint8Array {
+  return parseJumpFromPayload(bytes) ? bytes.subarray(0, bytes.byteLength - 24) : bytes;
 }
 
 async function parallel<T>(values: readonly T[], concurrency: number, operation: (value: T) => Promise<void>): Promise<void> {
