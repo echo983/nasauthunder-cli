@@ -4,7 +4,7 @@ import { defaultConfigPath, initializeConfig, loadConfig } from "./config.js";
 import { NntpPool } from "./nntp.js";
 import { calculateBytesGcid, messageId } from "./protocol.js";
 
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 async function main(argv: string[]): Promise<void> {
   const [command, ...args] = argv;

@@ -20,7 +20,12 @@ nasauthunder config check
 
 The password may instead be supplied as `NASAUTHUNDER_NNTP_PASSWORD`. Other fields use the same `NASAUTHUNDER_NNTP_*` prefix.
 
-The current stable npm release is `0.2.0`.
+The current stable npm release is `0.2.1`.
+
+New configurations use `alt.binaries.boneless`, a practical binary group, so
+personal users do not need to make an Usenet-specific group choice before the
+first upload. Override `group` or `NASAUTHUNDER_NNTP_GROUP` when your provider
+requires another posting group.
 
 ## Upload
 

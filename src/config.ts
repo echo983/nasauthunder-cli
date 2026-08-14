@@ -30,7 +30,7 @@ export async function initializeConfig(file?: string): Promise<string> {
   const template = {
     host: "news.example.com", port: 563, tls: true,
     username: "YOUR_USERNAME", password: "YOUR_PASSWORD",
-    group: "alt.binaries.test", from: "nasauthunder@example.invalid",
+    group: "alt.binaries.boneless", from: "nasauthunder@example.invalid",
     connections: 4, timeoutMs: 30000,
   };
   await writeFile(location, `${JSON.stringify(template, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });

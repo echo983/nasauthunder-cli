@@ -1,6 +1,6 @@
 {
   "name": "nasauthunder-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Archive local directories to Usenet using the nasauthunder immutable object protocol",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/echo983/nasauthunder-cli.git" },
