@@ -1,4 +1,4 @@
-# nasauthunder CLI
+# NASSAU THUNDER CLI
 
 Archive a local directory to Usenet with your own NNTP account. Files use the same immutable, GCID-addressed 700 KiB article protocol as nasauthunder, and the resulting receipt opens directly in the public browser at `https://<RECEIPT_GCID>.ch13a.com`.
 
@@ -12,12 +12,15 @@ Archive a local directory to Usenet with your own NNTP account. Files use the sa
 
 ```bash
 npm install -g nasauthunder-cli
+nasauthunder --version
 nasauthunder config init
 chmod 600 ~/.config/nasauthunder/config.json
 nasauthunder config check
 ```
 
 The password may instead be supplied as `NASAUTHUNDER_NNTP_PASSWORD`. Other fields use the same `NASAUTHUNDER_NNTP_*` prefix.
+
+The current stable npm release is `0.2.0`.
 
 ## Upload
 
